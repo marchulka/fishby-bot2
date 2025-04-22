@@ -2,11 +2,18 @@ import argparse, json, logging, os, openai, requests
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ChatAction, ParseMode
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, CallbackContext, CallbackQueryHandler, filters
+import redis
 
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN') or exit("🚨Error: TELEGRAM_TOKEN is not set.")
 openai.api_key = os.getenv('OPENAI_API_KEY') or None
 SESSION_DATA = {}
 TEST_DATA = {}
+
+# Подключение к Redis
+redis_host = os.getenv('REDIS_HOST')  # Хост вашего Redis
+redis_port = os.getenv('REDIS_PORT', 6379)  # Порт вашего Redis, по умолчанию 6379
+redis_password = os.getenv('REDIS_PASSWORD', None)  # Пароль вашего Redis, если есть
+redis_client = redis.StrictRedis(host=redis_host, port=redis_port, password=redis_password, decode_responses=True)
 
 def load_configuration():
     with open('configuration.json', 'r') as file:
@@ -68,38 +75,28 @@ def get_test_keyboard(block):
 @initialize_session_data
 @check_api_key
 async def handle_message(update: Update, context: CallbackContext, session_id):
-    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
-    session_data = SESSION_DATA[session_id]
-    if update.message.photo and session_data['model'] in VISION_MODELS:
-        photo = update.message.photo[-1]
-        photo_file = await context.bot.get_file(photo.file_id)
-        photo_url = photo_file.file_path
-        caption = update.message.caption or "Describe this image."
-        session_data['chat_history'].append({
-            "role": "user",
-            "content": [
-                {"type": "text", "text": caption},
-                {"type": "image_url", "image_url": photo_url}
-            ]
-        })
-    else:
-        user_message = update.message.text
-        session_data['chat_history'].append({
-            "role": "user",
-            "content": user_message
-        })
-    messages_for_api = [message for message in session_data['chat_history']]
+    query = update.message.text
+    response = await get_cached_response(query)  # Получаем ответ с кэшированием
+    await update.message.reply_text(response)
+
+async def get_cached_response(messages):
+    cache_key = f'response:{hash(str(messages))}'
+    cached_response = redis_client.get(cache_key)  # Проверяем, есть ли закэшированный ответ
+
+    if cached_response:
+        return cached_response  # Возвращаем закэшированный ответ
+
+    # Здесь добавьте вашу логику для генерации ответа
     response = await response_from_openai(
-        session_data['model'], 
-        messages_for_api, 
-        session_data['temperature'], 
-        session_data['max_tokens']
+        SESSION_DATA[str(messages[0]['role'])]['model'], 
+        messages, 
+        SESSION_DATA[str(messages[0]['role'])]['temperature'], 
+        SESSION_DATA[str(messages[0]['role'])]['max_tokens']
     )
-    session_data['chat_history'].append({
-        'role': 'assistant',
-        'content': response
-    })
-    await update.message.reply_markdown(response)
+    
+    # Кэшируем ответ
+    redis_client.set(cache_key, response, ex=3600)  # Кэшируем на 1 час
+    return response
 
 async def response_from_openai(model, messages, temperature, max_tokens):
     params = {'model': model, 'messages': messages, 'temperature': temperature}
@@ -292,6 +289,7 @@ def register_handlers(application):
     application.add_handler(CommandHandler('test', command_test))
     application.add_handler(CallbackQueryHandler(handle_test_callback, pattern='^test_'))
     application.add_handler(MessageHandler(filters.TEXT | filters.PHOTO, handle_message))
+    application.add_handler(CommandHandler('check_redis', check_redis))
 
 def railway_dns_workaround():
     from time import sleep
@@ -303,6 +301,13 @@ def railway_dns_workaround():
         print(f'The api.telegram.org is not reachable. Retrying...({_})')
     print("Failed to reach api.telegram.org after 3 attempts.")
 
+def check_redis(update: Update, context: CallbackContext) -> None:
+    try:
+        r.ping()  # Проверяем соединение
+        update.message.reply_text("Успешно подключено к Redis!")
+    except redis.ConnectionError:
+        update.message.reply_text("Ошибка подключения к Redis.")
+
 def main():
     parser = argparse.ArgumentParser(description="Run the Telegram bot.")
     parser.add_argument('--debug', action='store_true', help='Enable debug logging')
@@ -312,11 +317,11 @@ def main():
     else:
         logging.disable(logging.WARNING)
     railway_dns_workaround()
-    application = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
-    register_handlers(application)
+    updater = ApplicationBuilder().token('8155247647:AAF16xQ6vuGP80p0qcMKkK7JIuxzDknrhks').build()
+    register_handlers(updater)
     try:
         print("The Telegram Bot will now be running in long polling mode.")
-        application.run_polling()
+        updater.run_polling()
     except Exception as e:
         logging.error(f"An error occurred: {e}")
 

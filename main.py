@@ -1,3 +1,8 @@
+print("STARTING MAIN.PY ...")
+print("PYTHONPATH:", os.getenv("PYTHONPATH"))
+print("FILES IN DIR:", os.listdir("."))
+print("IMPORTING PACKAGES...")
+
 import argparse, json, logging, os, openai, requests
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ChatAction, ParseMode

@@ -1,0 +1,5 @@
+{
+  // Отключаем механизм Workspace Trust  
+  "security.workspace.trust.enabled": false,  
+  "security.workspace.trust.startupPrompt": "never"  
+} 
